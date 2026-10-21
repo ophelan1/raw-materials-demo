@@ -5,6 +5,7 @@ import { ErrorBoundary } from "@appsignal/browser/react";
 import Catalogue from "./pages/Catalogue";
 import OrderForm from "./pages/OrderForm";
 import OrderStatus from "./pages/OrderStatus";
+import { setTrackedRoute, track } from "./track";
 
 // Reports the matched route template ("/orders/:reference"), not the URL, so
 // errors and web vitals group per page instead of per order.
@@ -17,7 +18,10 @@ function RouteReporter() {
       if (!route.path) continue;
       template = route.path.startsWith("/") ? route.path : `${template}/${route.path}`;
     }
-    setRouteTemplate(template.replace(/\/+/g, "/") || "/");
+    const route = template.replace(/\/+/g, "/") || "/";
+    setRouteTemplate(route);
+    setTrackedRoute(route);
+    track("page_view", { route });
   }, [location.pathname]);
   return null;
 }

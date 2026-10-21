@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { captureError } from "@appsignal/browser";
 import { CUSTOMERS, euro, getMaterials, placeOrder } from "../api";
+import { track } from "../track";
+
+// The answer the API gave, as a funnel step.
+const OUTCOMES = { 201: "order_paid", 402: "order_declined", 409: "out_of_stock", 502: "order_failed" };
 
 export default function OrderForm() {
   const { sku } = useParams();
@@ -10,8 +14,13 @@ export default function OrderForm() {
   const [form, setForm] = useState({ customer: CUSTOMERS[0], quantity: 5, payment_method: "card" });
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
+  const openedAt = useRef(performance.now());
+  const failures = useRef(0);
 
   useEffect(() => {
+    openedAt.current = performance.now();
+    failures.current = 0;
+    track("funnel", { step: "view_product", sku });
     getMaterials().then((all) => setMaterial(all.find((m) => m.sku === sku) || false));
   }, [sku]);
 
@@ -19,8 +28,13 @@ export default function OrderForm() {
     event.preventDefault();
     setSubmitting(true);
     setResult(null);
+    track("funnel", { step: "submit_order", sku, payment_method: form.payment_method });
+    track("checkout_time", { payment_method: form.payment_method, ms: Math.round(performance.now() - openedAt.current) });
+    // A second try after a failed payment is a frustrated customer, not a new order.
+    if (failures.current > 0) track("retry_after_failure", { payment_method: form.payment_method });
     try {
       const { status, body } = await placeOrder({ ...form, sku, quantity: Number(form.quantity) });
+      track("funnel", { step: OUTCOMES[status] || "order_error", sku, payment_method: form.payment_method });
       if (status === 201) {
         navigate(`/orders/${body.reference}`, { state: { justPlaced: true } });
         return;
@@ -28,10 +42,12 @@ export default function OrderForm() {
       // 402 (declined by the bank) and 409 (not enough stock) are answers, not
       // failures. 502 is a payment failure: the SDK already reports it as a
       // browser error linked to the back-end trace, so it isn't reported twice.
+      if (status === 502) failures.current += 1;
       setResult({ status, body });
     } catch (error) {
       // Network failure or an unreadable response: unexpected, so report it.
       captureError(error, { sku, payment_method: form.payment_method });
+      track("funnel", { step: "network_error", sku, payment_method: form.payment_method });
       setResult({ status: 0, body: { error: "network_error" } });
     } finally {
       setSubmitting(false);
@@ -66,7 +82,11 @@ export default function OrderForm() {
           <label className="inline"><input type="radio" name="pm" checked={form.payment_method === "card"}
             onChange={() => setForm({ ...form, payment_method: "card" })} /> Card</label>
           <label className="inline"><input type="radio" name="pm" checked={form.payment_method === "invoice"}
-            onChange={() => setForm({ ...form, payment_method: "invoice" })} /> Invoice (30 days)</label>
+            onChange={() => {
+              // Switching to invoice right after a card failure: the workaround the failure notice offers.
+              if (failures.current > 0) track("switched_to_invoice", {});
+              setForm({ ...form, payment_method: "invoice" });
+            }} /> Invoice (30 days)</label>
         </fieldset>
         <div className="total">Total <strong>{euro(total)}</strong></div>
         <button type="submit" className="button" disabled={submitting}>{submitting ? "Placing order…" : "Place order"}</button>

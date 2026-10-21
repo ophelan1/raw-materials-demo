@@ -1,0 +1,8 @@
+{
+  "name": "ijzerhaven-visitors",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "puppeteer-core": "23.6.0"
+  }
+}

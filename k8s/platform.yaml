@@ -477,3 +477,30 @@ spec:
   type: NodePort
   selector: { app: storefront }
   ports: [{ port: 80, nodePort: 30080 }]
+---
+# ---------------------------------------------------------------- visitors
+# Headless Chromium shoppers for the storefront, so browser monitoring and the
+# storefront behaviour dashboard have real sessions between demos.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: visitors
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: visitors }
+  template:
+    metadata:
+      labels: { app: visitors }
+    spec:
+      containers:
+        - name: visitors
+          image: ijzerhaven/visitors:1
+          imagePullPolicy: Never
+          env:
+            - { name: STOREFRONT_URL, value: "http://storefront" }
+            - { name: VISIT_MINUTES, value: "3.5" }
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 768Mi }

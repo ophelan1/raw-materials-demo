@@ -17,7 +17,7 @@ fi
 kubectl config use-context kind-ijzerhaven >/dev/null
 
 echo "==> Building images"
-for svc in orders-web payments traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge storefront; do
+for svc in orders-web payments traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge storefront visitors; do
   docker build -q -t "ijzerhaven/$svc:1" \
     --build-arg VITE_APPSIGNAL_FRONTEND_API_KEY="${APPSIGNAL_FRONTEND_API_KEY:-}" \
     --build-arg VITE_APP_REVISION="$(git rev-parse HEAD 2>/dev/null || echo dev)" \

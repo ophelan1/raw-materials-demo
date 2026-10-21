@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { euro, getMaterials } from "../api";
+import { track } from "../track";
 
 export default function Catalogue() {
   const [materials, setMaterials] = useState(null);
@@ -28,7 +29,8 @@ export default function Catalogue() {
             <h2>{m.name}</h2>
             <div className="price">{euro(m.price_cents)} <span>/ {m.unit}</span></div>
             <div className={m.stock < 200 ? "stock low" : "stock"}>{m.stock.toLocaleString("nl-NL")} {m.unit}s in stock</div>
-            <Link className="button" to={`/order/${encodeURIComponent(m.sku)}`}>Order</Link>
+            <Link className="button" to={`/order/${encodeURIComponent(m.sku)}`}
+              onClick={() => track("funnel", { step: "select_product", sku: m.sku })}>Order</Link>
           </article>
         ))}
       </div>

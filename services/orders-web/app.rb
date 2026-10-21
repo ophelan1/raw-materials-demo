@@ -177,6 +177,59 @@ module Catalogue
   end
 end
 
+# Turns storefront behaviour events (see services/storefront/src/track.js) into
+# AppSignal custom metrics. Every tag value is checked against a fixed list, so
+# a visitor can't create new metric series by sending made-up values.
+module StorefrontMetrics
+  ROUTES = ["/", "/order/:sku", "/orders/:reference"].freeze
+  STEPS = %w[select_product view_product submit_order order_paid order_declined out_of_stock
+    order_failed order_error network_error].freeze
+  ENDPOINTS = ["GET /api/materials", "GET /api/orders/:reference", "POST /api/orders"].freeze
+  STATUSES = %w[2xx 3xx 4xx 5xx network_error].freeze
+  PAYMENT_METHODS = %w[card invoice].freeze
+  DEVICES = %w[mobile tablet desktop].freeze
+  VISITORS = %w[new returning].freeze
+  SKUS = Schema::MATERIALS.map(&:first).freeze
+  MAX_EVENTS = 50
+
+  def self.record(events)
+    Array(events).first(MAX_EVENTS).each do |e|
+      next unless e.is_a?(Hash)
+      pick = ->(key, allowed) { allowed.include?(e[key]) ? e[key] : nil }
+      ms = e["ms"].is_a?(Numeric) && e["ms"].between?(0, 3_600_000) ? e["ms"] : nil
+      case e["event"]
+      when "session_start"
+        device, visitor = pick.("device", DEVICES), pick.("visitor", VISITORS)
+        device && visitor && Appsignal.increment_counter("storefront_sessions", 1, device: device, visitor: visitor)
+      when "page_view"
+        route = pick.("route", ROUTES)
+        route && Appsignal.increment_counter("storefront_page_views", 1, route: route)
+      when "funnel"
+        step = pick.("step", STEPS)
+        next unless step
+        Appsignal.increment_counter("storefront_funnel", 1, step: step)
+        sku = pick.("sku", SKUS)
+        Appsignal.increment_counter("storefront_product_interest", 1, sku: sku, step: step) if sku && %w[view_product order_paid].include?(step)
+        method = pick.("payment_method", PAYMENT_METHODS)
+        Appsignal.increment_counter("storefront_payment_choice", 1, payment_method: method) if method && step == "submit_order"
+      when "checkout_time"
+        method = pick.("payment_method", PAYMENT_METHODS)
+        method && ms && Appsignal.add_distribution_value("storefront_checkout_seconds", ms / 1000.0, payment_method: method)
+      when "api_call"
+        endpoint, status = pick.("endpoint", ENDPOINTS), pick.("status", STATUSES)
+        endpoint && status && ms && Appsignal.add_distribution_value("storefront_api_ms", ms, endpoint: endpoint, status: status)
+      when "rage_click"
+        route = pick.("route", ROUTES)
+        route && Appsignal.increment_counter("storefront_frustration", 1, signal: "rage_click", route: route)
+      when "retry_after_failure"
+        Appsignal.increment_counter("storefront_frustration", 1, signal: "retry_after_failure", route: "/order/:sku")
+      when "switched_to_invoice"
+        Appsignal.increment_counter("storefront_frustration", 1, signal: "switched_to_invoice", route: "/order/:sku")
+      end
+    end
+  end
+end
+
 class OrdersWeb < Sinatra::Base
   set :show_exceptions, false
   set :raise_errors, false
@@ -196,7 +249,7 @@ class OrdersWeb < Sinatra::Base
   # Splunk queries are built on (event, http_method, path, http_status,
   # duration_ms). AppSignal adds trace_id/span_id to it automatically.
   after do
-    next if request.path == "/healthz"
+    next if request.path == "/healthz" || request.path == "/api/rum"
     duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - @started) * 1000).round(1)
     LOG.info("api_response", event: response.status >= 500 ? "api_error" : "api_response",
       http_method: request.request_method, path: request.fullpath, http_status: response.status,
@@ -231,6 +284,16 @@ class OrdersWeb < Sinatra::Base
     order = DB[:orders].where(reference: params[:reference]).first
     halt 404, JSON.generate(error: "not_found") unless order
     JSON.generate(order)
+  end
+
+  # Storefront behaviour beacons. An ignored action (APPSIGNAL_IGNORE_ACTIONS),
+  # so it creates no traces and doesn't count as a request.
+  post "/api/rum" do
+    payload = JSON.parse(request.body.read(64 * 1024).to_s)
+    StorefrontMetrics.record(payload["events"])
+    status 204
+  rescue JSON::ParserError
+    status 400
   end
 
   post "/api/orders" do

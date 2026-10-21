@@ -72,7 +72,7 @@ spec:
           env:
             - { name: APPSIGNAL_ACTIVE, value: "true" }
             - { name: APPSIGNAL_APP_ENV, value: production }
-            - { name: APPSIGNAL_IGNORE_ACTIONS, value: "GET /healthz" }
+            - { name: APPSIGNAL_IGNORE_ACTIONS, value: "GET /healthz,POST /api/rum" }
             - name: APPSIGNAL_APP_NAME
               valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
             - name: APPSIGNAL_PUSH_API_KEY

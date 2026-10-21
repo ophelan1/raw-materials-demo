@@ -42,6 +42,8 @@ kubectl -n ijzerhaven create secret generic appsignal-app \
 
 echo "==> Deploying app"
 kubectl apply -f k8s/app.yaml >/dev/null
+# Apps create their tables on boot, so Postgres must be up before they restart.
+kubectl -n ijzerhaven rollout status deployment postgres --timeout=120s >/dev/null
 kubectl -n ijzerhaven rollout restart deployment orders-web payments-api traffic capacity-metrics >/dev/null
 kubectl -n ijzerhaven rollout status deployment orders-web payments-api --timeout=180s
 

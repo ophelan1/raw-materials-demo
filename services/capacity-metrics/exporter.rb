@@ -13,6 +13,7 @@ require "openssl"
 require "appsignal"
 
 Appsignal.start
+$stdout.sync = true
 LOG = Logger.new($stdout)
 INTERVAL = Integer(ENV.fetch("INTERVAL_SECONDS", "30"))
 

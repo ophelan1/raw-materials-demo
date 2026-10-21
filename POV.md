@@ -92,7 +92,7 @@ Status: ✅ shown live · ⚠️ partly / with a caveat · ❌ not offered.
 | Row | Requirement | Status | Where | How it's done |
 |---|---|---|---|---|
 | 44 | Light lock-in, data portability | ✅ | — | Ruby services report over OpenTelemetry (OTLP via the hosted collector); exporters speak plain Prometheus; everything is readable through MCP/CLI. |
-| 45 | Browser / RUM | ⚠️ | — | AppSignal for Browser (errors, web vitals, traces into the back end) is available; not wired into this demo. Needs the app's Front-end API key. |
+| 45 | Browser / RUM | ✅ | [Browser errors](https://appsignal.com/redirect-to/app?to=browser/errors&app_id=6ad846a1f2103d81d1b60e6a), [Browser performance](https://appsignal.com/redirect-to/app?to=browser/performance&app_id=6ad846a1f2103d81d1b60e6a) | React storefront (`services/storefront`, http://localhost:8080) runs AppSignal for Browser: JS errors per route, page loads and web vitals, tagged with the deployed revision. API calls send `traceparent`, so an order placed in the browser and the orders-web → payments-api spans are one trace. A failed payment (502) shows as a browser error linked to that trace. |
 | 46 | Mobile | ❌ | — | No native mobile SDK. |
 | 47 | Synthetic / availability | ⚠️ | — | AppSignal uptime monitors (4 regions, per-phase timing, SSL expiry) need a public URL; this demo runs on a laptop. One MCP call creates one. |
 | 48 | AI assistance | ✅ | MCP + CLI | AppSignal MCP: query traces, errors, logs, metrics; create dashboards, triggers, log actions, uptime monitors. Every dashboard and alert in this PoV was built through it. |

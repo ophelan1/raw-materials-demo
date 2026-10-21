@@ -27,8 +27,12 @@ Pods are spread one-per-node across `ijzerhaven-control-plane`,
    - `APPSIGNAL_COLLECTOR_ENDPOINT` — App settings → Hosted Collector → Collector URL
      (distributed tracing only works through the hosted collector)
    - `APPSIGNAL_K8S_API_KEY` — the app-specific push API key, for Cluster Metrics
+   - `APPSIGNAL_FRONTEND_API_KEY` — App settings → Front-end error monitoring key,
+     baked into the storefront bundle (it is public by design)
 2. `scripts/up.sh` (rerunnable; it rebuilds images and restarts pods)
-3. Catalogue page: http://localhost:8080
+3. Storefront (React, AppSignal for Browser): http://localhost:8080. Place an
+   order during a failure window to see the browser error and its back-end trace
+   together. Browser data lands in the `browser` namespace.
 
 Tear down with `scripts/down.sh`, then `colima stop`.
 

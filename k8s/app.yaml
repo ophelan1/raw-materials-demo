@@ -1,0 +1,200 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ijzerhaven
+---
+# ---------------------------------------------------------------- Postgres
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - { name: POSTGRES_USER, value: ijzerhaven }
+            - { name: POSTGRES_PASSWORD, value: ijzerhaven }
+            - { name: POSTGRES_DB, value: orders }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "ijzerhaven"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ijzerhaven
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432 }]
+---
+# ---------------------------------------------------------------- orders-web
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-web
+  namespace: ijzerhaven
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: orders-web }
+  template:
+    metadata:
+      labels: { app: orders-web }
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys: [pod-template-hash]
+          labelSelector:
+            matchLabels: { app: orders-web }
+      containers:
+        - name: orders-web
+          image: ijzerhaven/orders-web:1
+          imagePullPolicy: Never
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_IGNORE_ACTIONS, value: "GET /healthz" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_COLLECTOR_ENDPOINT
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: collector-endpoint } }
+            - name: APPSIGNAL_REVISION
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: revision } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: APPSIGNAL_SERVICE_NAME, value: orders-web }
+            - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
+            - { name: PAYMENTS_URL, value: "http://payments-api:4000" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-web
+  namespace: ijzerhaven
+spec:
+  type: NodePort
+  selector: { app: orders-web }
+  ports: [{ port: 3000, nodePort: 30080 }]
+---
+# ---------------------------------------------------------------- payments-api
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+  namespace: ijzerhaven
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: payments-api }
+  template:
+    metadata:
+      labels: { app: payments-api }
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          matchLabelKeys: [pod-template-hash]
+          labelSelector:
+            matchLabels: { app: payments-api }
+      volumes:
+        - name: acquirer-mtls
+          secret: { secretName: acquirer-mtls }
+      containers:
+        - name: payments-api
+          image: ijzerhaven/payments:1
+          imagePullPolicy: Never
+          ports: [{ containerPort: 4000 }]
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_IGNORE_ACTIONS, value: "GET /healthz" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_COLLECTOR_ENDPOINT
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: collector-endpoint } }
+            - name: APPSIGNAL_REVISION
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: revision } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: APPSIGNAL_SERVICE_NAME, value: payments-api }
+            - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
+            - { name: ACQUIRER_TLS_DIR, value: /etc/payments/tls }
+            - { name: FAILURE_INTERVAL_MINUTES, value: "10" }
+            - { name: FAILURE_DURATION_SECONDS, value: "120" }
+          volumeMounts:
+            - { name: acquirer-mtls, mountPath: /etc/payments/tls, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 4000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-api
+  namespace: ijzerhaven
+spec:
+  selector: { app: payments-api }
+  ports: [{ port: 4000 }]
+---
+# ---------------------------------------------------------------- traffic
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: traffic }
+  template:
+    metadata:
+      labels: { app: traffic }
+    spec:
+      containers:
+        - name: traffic
+          image: ijzerhaven/traffic:1
+          imagePullPolicy: Never
+          env:
+            - { name: ORDERS_URL, value: "http://orders-web:3000" }
+            - { name: REQUESTS_PER_SECOND, value: "4" }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }

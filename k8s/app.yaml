@@ -90,6 +90,9 @@ spec:
             - { name: APPSIGNAL_SERVICE_NAME, value: orders-web }
             - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
             - { name: PAYMENTS_URL, value: "http://payments-api:4000" }
+            - { name: MQTT_HOST, value: rabbitmq }
+            - { name: MQTT_USERNAME, value: ijzerhaven }
+            - { name: MQTT_PASSWORD, value: ijzerhaven }
             # Resource attributes land on every span this pod sends.
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: "k8s.pod.name=$(POD_NAME),k8s.node.name=$(NODE_NAME),k8s.namespace.name=ijzerhaven,k8s.deployment.name=orders-web,k8s.manifest.url=https://github.com/ophelan1/raw-materials-demo/blob/$(APP_REVISION)/k8s/app.yaml#L45"
@@ -293,6 +296,173 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
             - { name: PGDATABASE, value: orders }
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+---
+# ---------------------------------------------------------------- rabbitmq (MQTT broker)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: ijzerhaven
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_mqtt,rabbitmq_prometheus].
+  20-mqtt.conf: |
+    mqtt.allow_anonymous = false
+    mqtt.vhost = /
+    mqtt.exchange = amq.topic
+    mqtt.prefetch = 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: rabbitmq }
+  template:
+    metadata:
+      labels: { app: rabbitmq }
+    spec:
+      volumes:
+        - name: config
+          configMap: { name: rabbitmq-config }
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management
+          env:
+            - { name: RABBITMQ_DEFAULT_USER, value: ijzerhaven }
+            - { name: RABBITMQ_DEFAULT_PASS, value: ijzerhaven }
+          ports:
+            - { name: mqtt, containerPort: 1883 }
+            - { name: management, containerPort: 15672 }
+            - { name: prometheus, containerPort: 15692 }
+          volumeMounts:
+            - { name: config, mountPath: /etc/rabbitmq/enabled_plugins, subPath: enabled_plugins }
+            - { name: config, mountPath: /etc/rabbitmq/conf.d/20-mqtt.conf, subPath: 20-mqtt.conf }
+          readinessProbe:
+            tcpSocket: { port: 1883 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 768Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: ijzerhaven
+spec:
+  selector: { app: rabbitmq }
+  ports:
+    - { name: mqtt, port: 1883 }
+    - { name: management, port: 15672 }
+    - { name: prometheus, port: 15692 }
+# ---------------------------------------------------------------- MQTT sensors, consumer, metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sensors
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: sensors }
+  template:
+    metadata:
+      labels: { app: sensors }
+    spec:
+      containers:
+        - name: sensors
+          image: ijzerhaven/sensors:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_ENABLE_HOST_METRICS, value: "false" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: MQTT_HOST, value: rabbitmq }
+            - { name: MQTT_USERNAME, value: ijzerhaven }
+            - { name: MQTT_PASSWORD, value: ijzerhaven }
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: telemetry }
+  template:
+    metadata:
+      labels: { app: telemetry }
+    spec:
+      containers:
+        - name: telemetry
+          image: ijzerhaven/telemetry:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_ENABLE_HOST_METRICS, value: "false" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: MQTT_HOST, value: rabbitmq }
+            - { name: MQTT_USERNAME, value: ijzerhaven }
+            - { name: MQTT_PASSWORD, value: ijzerhaven }
+            - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mqtt-metrics
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mqtt-metrics }
+  template:
+    metadata:
+      labels: { app: mqtt-metrics }
+    spec:
+      containers:
+        - name: mqtt-metrics
+          image: ijzerhaven/mqtt-metrics:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_ENABLE_HOST_METRICS, value: "false" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: RABBITMQ_HOST, value: rabbitmq }
+            - { name: RABBITMQ_USERNAME, value: ijzerhaven }
+            - { name: RABBITMQ_PASSWORD, value: ijzerhaven }
           resources:
             requests: { cpu: 20m, memory: 96Mi }
             limits: { memory: 256Mi }

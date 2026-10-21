@@ -1,0 +1,4 @@
+source "https://rubygems.org"
+
+gem "appsignal", "5.0.5"
+gem "mqtt", "~> 0.7"

@@ -1,0 +1,21 @@
+# Kept deliberately sparse: every job run counts as an AppSignal request.
+production:
+  reconcile_stock:
+    class: ReconcileStockJob
+    queue: default
+    schedule: every 2 minutes
+  supplier_reorder:
+    class: SupplierReorderJob
+    queue: default
+    schedule: every 5 minutes
+  truck_schedule:
+    class: Dispatch::TruckScheduleJob
+    queue: critical
+    schedule: every 3 minutes
+  invoice_export:
+    class: InvoiceExportJob
+    queue: exports
+    schedule: every 15 minutes
+  clear_finished_jobs:
+    command: "SolidQueue::Job.clear_finished_in_batches(sleep_between_batches: 0.3)"
+    schedule: every hour at minute 12

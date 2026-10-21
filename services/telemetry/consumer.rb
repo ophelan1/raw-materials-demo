@@ -8,6 +8,7 @@
 require "json"
 require "logger"
 require "mqtt"
+require "mysql2"
 require "pg"
 require "appsignal"
 
@@ -29,6 +30,42 @@ def db
         level_pct numeric NOT NULL, tonnes numeric NOT NULL, updated_at timestamptz NOT NULL
       )
     SQL
+  end
+end
+
+# Full reading history lives in MySQL (Postgres only keeps the latest level).
+def mysql_client
+  Mysql2::Client.new(host: ENV.fetch("MYSQL_HOST", "mysql"), username: ENV.fetch("MYSQL_USER"),
+    password: ENV.fetch("MYSQL_PASSWORD"), database: ENV.fetch("MYSQL_DATABASE", "telemetry"), reconnect: true)
+end
+
+def mysql
+  @mysql ||= mysql_client.tap do |c|
+    c.query(<<~SQL)
+      CREATE TABLE IF NOT EXISTS silo_readings (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY, device VARCHAR(64) NOT NULL, site VARCHAR(32) NOT NULL,
+        sku VARCHAR(32) NOT NULL, level_pct DECIMAL(5,1) NOT NULL, tonnes DECIMAL(8,1) NOT NULL,
+        read_at DATETIME(3) NOT NULL, KEY idx_read_at (read_at)
+      )
+    SQL
+  end
+end
+
+# Every minute: an hourly rollup (uses the read_at index) and a "lowest
+# readings" report that scans the whole table, so the MySQL dashboard has a
+# slow query shape to point at.
+def rollups
+  client = nil
+  loop do
+    sleep 60
+    begin
+      client ||= mysql_client
+      client.query("SELECT site, sku, avg(level_pct), min(level_pct) FROM silo_readings WHERE read_at > now() - INTERVAL 1 HOUR GROUP BY site, sku").to_a
+      client.query("SELECT device, level_pct, read_at FROM silo_readings ORDER BY level_pct, read_at DESC LIMIT 20").to_a
+    rescue StandardError => e
+      LOG.warn("MySQL rollup failed: #{e.class}: #{e.message}")
+      client = nil
+    end
   end
 end
 
@@ -59,6 +96,8 @@ def handle(topic, payload)
       ON CONFLICT (device) DO UPDATE SET level_pct = $4, tonnes = $5, updated_at = now()
     SQL
     Appsignal.set_gauge("silo_level_pct", data["level_pct"].to_f, site: data["site"], sku: data["sku"])
+    @insert_reading ||= mysql.prepare("INSERT INTO silo_readings (device, site, sku, level_pct, tonnes, read_at) VALUES (?, ?, ?, ?, ?, ?)")
+    @insert_reading.execute(*data.values_at("device", "site", "sku", "level_pct", "tonnes"), Time.at(data["ts"].to_i / 1000.0).utc)
   when "status"
     $online[data["device"]] = data["state"] == "online"
     Appsignal.increment_counter("mqtt_device_status_changes", 1, state: data["state"])
@@ -73,6 +112,7 @@ rescue StandardError => e
 end
 
 reporter = Thread.new { loop { report_devices rescue nil; sleep 15 } }
+Thread.new { rollups }
 
 loop do
   client = MQTT::Client.new(

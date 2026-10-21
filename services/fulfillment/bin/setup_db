@@ -1,0 +1,9 @@
+#!/usr/bin/env ruby
+# Loads the Solid Queue tables into the orders database the first time.
+require_relative "../config/environment"
+
+unless ActiveRecord::Base.connection.table_exists?(:solid_queue_jobs)
+  ActiveRecord::Base.connection.execute("SELECT pg_advisory_lock(4203)")
+  load Rails.root.join("db/queue_schema.rb") unless ActiveRecord::Base.connection.table_exists?(:solid_queue_jobs)
+  Rails.logger.info("Loaded Solid Queue schema")
+end

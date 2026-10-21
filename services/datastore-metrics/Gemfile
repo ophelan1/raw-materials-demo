@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+gem "appsignal", "5.0.5"
+gem "redis", "~> 5.4"
+gem "mysql2", "~> 0.5"

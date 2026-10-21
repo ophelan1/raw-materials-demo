@@ -151,6 +151,7 @@ def collect
     end
   end
 
+  node_loss(nodes, scheduled, cluster)
   gauge("k8s_cluster_nodes_ready", cluster[:ready])
   gauge("k8s_cluster_cpu_allocatable_cores", cluster[:a_cpu])
   gauge("k8s_cluster_memory_allocatable_bytes", cluster[:a_mem])
@@ -162,6 +163,36 @@ def collect
   gauge("k8s_cluster_cpu_unrequested_cores", cluster[:a_cpu] - cluster[:req_cpu])
   gauge("k8s_cluster_memory_unrequested_bytes", cluster[:a_mem] - cluster[:req_mem])
   LOG.info("Reported capacity for #{nodes.size} nodes, #{scheduled.size} pods")
+end
+
+# Node loss simulator: for each node, pretend it's gone and check whether its
+# pods' requests still fit in what the remaining nodes have free. Reports the
+# cluster's requested % without that node, the CPU/memory that would be left
+# over (negative = pods that couldn't be rescheduled), and an overall
+# "survives losing any one node" flag, the N+1 question for capacity planning.
+def node_loss(nodes, scheduled, cluster)
+  requests = lambda do |pods|
+    cs = pods.flat_map { |p| p.dig("spec", "containers") }
+    [cs.sum { |c| cpu(c.dig("resources", "requests", "cpu")) }, cs.sum { |c| bytes(c.dig("resources", "requests", "memory")) }]
+  end
+  survives_any = true
+  nodes.each do |node|
+    name = node.dig("metadata", "name")
+    alloc = node.dig("status", "allocatable")
+    remaining_cpu = cluster[:a_cpu] - cpu(alloc["cpu"])
+    remaining_mem = cluster[:a_mem] - bytes(alloc["memory"])
+    tags = { lost_node: name }
+    gauge("k8s_node_loss_cpu_requested_pct", pct(cluster[:req_cpu], remaining_cpu), tags)
+    gauge("k8s_node_loss_memory_requested_pct", pct(cluster[:req_mem], remaining_mem), tags)
+    gauge("k8s_node_loss_cpu_headroom_cores", (remaining_cpu - cluster[:req_cpu]).round(3), tags)
+    gauge("k8s_node_loss_memory_headroom_bytes", remaining_mem - cluster[:req_mem], tags)
+    evicted_cpu, evicted_mem = requests.(scheduled.select { |p| p.dig("spec", "nodeName") == name })
+    gauge("k8s_node_loss_pods_to_reschedule", scheduled.count { |p| p.dig("spec", "nodeName") == name }, tags)
+    gauge("k8s_node_loss_cpu_to_reschedule_cores", evicted_cpu.round(3), tags)
+    gauge("k8s_node_loss_memory_to_reschedule_bytes", evicted_mem, tags)
+    survives_any &&= remaining_cpu >= cluster[:req_cpu] && remaining_mem >= cluster[:req_mem]
+  end
+  gauge("k8s_cluster_survives_node_loss", survives_any ? 1 : 0)
 end
 
 # Share of CPU periods in which a pod hit its CPU limit, since the last run.

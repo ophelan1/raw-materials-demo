@@ -1,0 +1,4 @@
+production:
+  adapter: postgresql
+  url: <%= ENV.fetch("DATABASE_URL") %>
+  pool: 10

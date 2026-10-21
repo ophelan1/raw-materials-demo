@@ -8,6 +8,7 @@ require "json"
 require "logger"
 require "mqtt"
 require "net/http"
+require "redis"
 require "securerandom"
 require "sequel"
 require "sinatra/base"
@@ -126,17 +127,58 @@ class Dispatch
   end
 end
 
+# Redis behind Sentinel: the client asks the sentinels who the master is, so a
+# failover is followed without a config change.
+REDIS = Redis.new(
+  name: "ijzerhaven", role: :master,
+  sentinels: ENV.fetch("REDIS_SENTINELS", "redis-sentinel:26379").split(",").map { |hp| h, p = hp.split(":"); { host: h, port: p.to_i } },
+  connect_timeout: 0.5, read_timeout: 0.5, write_timeout: 0.5, reconnect_attempts: 1
+)
+
+# The catalogue changes slowly, so it's cached in Redis for 30 seconds. If
+# Redis is unavailable the page falls back to Postgres instead of failing.
+module Catalogue
+  def self.materials(order)
+    key = "catalogue:v1:#{order}"
+    cached = REDIS.get(key)
+    Appsignal.increment_counter("catalogue_cache", 1, result: cached ? "hit" : "miss")
+    return JSON.parse(cached, symbolize_names: true) if cached
+
+    rows = DB[:materials].order(order).all
+    REDIS.set(key, JSON.generate(rows), ex: 30)
+    rows
+  rescue Redis::BaseError => e
+    Appsignal.increment_counter("catalogue_cache", 1, result: "error")
+    LOG.warn("Catalogue cache unavailable, reading from Postgres", error: e.class.name, message: e.message)
+    DB[:materials].order(order).all
+  end
+end
+
 class OrdersWeb < Sinatra::Base
   set :show_exceptions, false
   set :raise_errors, false
   set :host_authorization, { permitted_hosts: [] }
 
   before do
+    @started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     Appsignal.add_tags(
       customer: request.env["HTTP_X_CUSTOMER"],
       pod: ENV["POD_NAME"],
-      node: ENV["NODE_NAME"]
+      node: ENV["NODE_NAME"],
+      entrypoint: request.env["HTTP_X_ENTRYPOINT"] || "direct"
     )
+  end
+
+  # One structured line per API call, like the access events the customer's
+  # Splunk queries are built on (event, http_method, path, http_status,
+  # duration_ms). AppSignal adds trace_id/span_id to it automatically.
+  after do
+    next if request.path == "/healthz"
+    duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - @started) * 1000).round(1)
+    LOG.info("api_response", event: response.status >= 500 ? "api_error" : "api_response",
+      http_method: request.request_method, path: request.fullpath, http_status: response.status,
+      duration_ms: duration_ms, customer: request.env["HTTP_X_CUSTOMER"].to_s,
+      entrypoint: request.env["HTTP_X_ENTRYPOINT"] || "direct")
   end
 
   get "/healthz" do
@@ -144,7 +186,7 @@ class OrdersWeb < Sinatra::Base
   end
 
   get "/" do
-    materials = DB[:materials].order(:name).all
+    materials = Catalogue.materials(:name)
     rows = materials.map do |m|
       "<tr><td>#{m[:sku]}</td><td>#{m[:name]}</td><td>&euro;#{format("%.2f", m[:price_cents] / 100.0)} / #{m[:unit]}</td><td>#{m[:stock]}</td></tr>"
     end
@@ -158,7 +200,7 @@ class OrdersWeb < Sinatra::Base
 
   get "/api/materials" do
     content_type :json
-    JSON.generate(DB[:materials].order(:sku).all)
+    JSON.generate(Catalogue.materials(:sku))
   end
 
   get "/api/orders/:reference" do

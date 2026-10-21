@@ -1,0 +1,11 @@
+production:
+  dispatchers:
+    - polling_interval: 1
+      batch_size: 500
+  workers:
+    - queues: [critical, default]
+      threads: 3
+      polling_interval: 1
+    - queues: [exports]
+      threads: 1
+      polling_interval: 2

@@ -1,0 +1,141 @@
+# Prometheus bridge configuration (mounted as ConfigMap "prometheus-bridge").
+# Each job lists the series worth keeping and how to aggregate them. Labels
+# not listed are summed away, which keeps AppSignal series counts small.
+cluster: ijzerhaven-kind
+interval: 30
+
+# Pods/services annotated prometheus.io/scrape: "true" with no rules below get
+# this: their gauges, capped, as prom_<name>. Add rules once you know which
+# series you want long term.
+default_passthrough:
+  match: "^[a-z_]+$"
+  max_series: 40
+  labels: []
+
+jobs:
+  # ---------------------------------------------------------------- control plane
+  - name: apiserver
+    url: https://kubernetes.default.svc/metrics
+    auth: true
+    per_instance_tags: false
+    rules:
+      - { metric: apiserver_request_total, type: counter, as: k8s_apiserver_requests,
+          labels: [verb, { from: code, as: code_class, transform: class }] }
+      - { metric: apiserver_request_duration_seconds, type: histogram, as: k8s_apiserver_request_duration_ms,
+          scale: 1000, labels: [verb], match: { verb: "^(GET|LIST|POST|PUT|PATCH|DELETE)$" } }
+      - { metric: apiserver_current_inflight_requests, type: gauge, as: k8s_apiserver_inflight_requests,
+          labels: [request_kind] }
+      - { metric: etcd_request_duration_seconds, type: histogram, as: k8s_apiserver_etcd_request_duration_ms, scale: 1000 }
+      - { metric: apiserver_storage_objects, type: gauge, as: k8s_apiserver_storage_objects, labels: [resource],
+          match: { resource: "^(pods|events|secrets|configmaps|deployments.apps|replicasets.apps|services|endpoints|nodes|leases.coordination.k8s.io)$" } }
+
+  - name: scheduler
+    url: https://127.0.0.1:10259/metrics
+    auth: true
+    insecure: true
+    per_instance_tags: false
+    rules:
+      - { metric: scheduler_pending_pods, type: gauge, as: k8s_scheduler_pending_pods, labels: [queue] }
+      - { metric: scheduler_schedule_attempts_total, type: counter, as: k8s_scheduler_attempts, labels: [result] }
+      - { metric: scheduler_scheduling_attempt_duration_seconds, type: histogram,
+          as: k8s_scheduler_attempt_duration_ms, scale: 1000 }
+      - { metric: scheduler_preemption_attempts_total, type: counter, as: k8s_scheduler_preemption_attempts }
+
+  - name: controller-manager
+    url: https://127.0.0.1:10257/metrics
+    auth: true
+    insecure: true
+    per_instance_tags: false
+    rules:
+      - { metric: workqueue_depth, type: gauge, as: k8s_controller_workqueue_depth, labels: [name],
+          match: { name: "^(deployment|replicaset|daemonset|statefulset|job|endpoint|node|garbagecollector.*)$" } }
+
+  - name: etcd
+    url: http://127.0.0.1:2381/metrics
+    per_instance_tags: false
+    rules:
+      - { metric: etcd_server_has_leader, type: gauge, as: k8s_etcd_has_leader }
+      - { metric: etcd_server_leader_changes_seen_total, type: counter, as: k8s_etcd_leader_changes }
+      - { metric: etcd_server_proposals_failed_total, type: counter, as: k8s_etcd_proposals_failed }
+      - { metric: etcd_server_proposals_pending, type: gauge, as: k8s_etcd_proposals_pending }
+      - { metric: etcd_mvcc_db_total_size_in_bytes, type: gauge, as: k8s_etcd_db_size_bytes }
+      - { metric: etcd_mvcc_db_total_size_in_use_in_bytes, type: gauge, as: k8s_etcd_db_size_in_use_bytes }
+      - { metric: etcd_disk_wal_fsync_duration_seconds, type: histogram, as: k8s_etcd_wal_fsync_ms, scale: 1000 }
+      - { metric: etcd_disk_backend_commit_duration_seconds, type: histogram, as: k8s_etcd_backend_commit_ms, scale: 1000 }
+
+  - name: kubelet
+    per_node: true
+    path: /metrics
+    auth: true
+    rules:
+      - { metric: kubelet_running_pods, type: gauge, as: k8s_kubelet_running_pods }
+      - { metric: kubelet_running_containers, type: gauge, as: k8s_kubelet_running_containers, labels: [container_state] }
+      - { metric: kubelet_pod_start_duration_seconds, type: histogram, as: k8s_kubelet_pod_start_ms, scale: 1000 }
+      - { metric: kubelet_pleg_relist_duration_seconds, type: histogram, as: k8s_kubelet_pleg_relist_ms, scale: 1000 }
+      - { metric: kubelet_runtime_operations_errors_total, type: counter, as: k8s_kubelet_runtime_errors, labels: [operation_type] }
+      - { metric: kubelet_evictions, type: counter, as: k8s_kubelet_evictions, labels: [eviction_signal] }
+
+  # ---------------------------------------------------------------- add-ons (found by annotation)
+  - name: kube-dns
+    rules:
+      - { metric: coredns_dns_requests_total, type: counter, as: k8s_coredns_requests, labels: [type],
+          match: { type: "^(A|AAAA|SRV|PTR|other)$" } }
+      - { metric: coredns_dns_responses_total, type: counter, as: k8s_coredns_responses, labels: [rcode] }
+      - { metric: coredns_dns_request_duration_seconds, type: histogram, as: k8s_coredns_request_duration_ms, scale: 1000 }
+      - { metric: coredns_cache_hits_total, type: counter, as: k8s_coredns_cache, labels: [{ from: type, as: result }] }
+      - { metric: coredns_cache_misses_total, type: counter, as: k8s_coredns_cache_misses }
+
+  - name: ingress-nginx
+    rules:
+      - { metric: nginx_ingress_controller_requests, type: counter, as: k8s_ingress_nginx_requests,
+          labels: [ingress, { from: status, as: status_class, transform: class }] }
+      - { metric: nginx_ingress_controller_request_duration_seconds, type: histogram,
+          as: k8s_ingress_nginx_request_duration_ms, scale: 1000, labels: [ingress] }
+      - { metric: nginx_ingress_controller_nginx_process_connections, type: gauge,
+          as: k8s_ingress_nginx_connections, labels: [state] }
+      - { metric: nginx_ingress_controller_config_last_reload_successful, type: gauge,
+          as: k8s_ingress_nginx_config_reload_ok }
+
+  - name: traefik
+    rules:
+      - { metric: traefik_entrypoint_requests_total, type: counter, as: k8s_traefik_requests,
+          labels: [entrypoint, { from: code, as: code_class, transform: class }] }
+      - { metric: traefik_service_requests_total, type: counter, as: k8s_traefik_service_requests,
+          labels: [service, { from: code, as: code_class, transform: class }] }
+      - { metric: traefik_service_request_duration_seconds, type: histogram,
+          as: k8s_traefik_service_request_duration_ms, scale: 1000, labels: [service] }
+      - { metric: traefik_open_connections, type: gauge, as: k8s_traefik_open_connections, labels: [entrypoint] }
+
+  - name: haproxy
+    rules:
+      - { metric: haproxy_frontend_current_sessions, type: gauge, as: haproxy_frontend_sessions, labels: [proxy] }
+      - { metric: haproxy_frontend_http_requests_total, type: counter, as: haproxy_frontend_requests, labels: [proxy] }
+      - { metric: haproxy_backend_http_responses_total, type: counter, as: haproxy_backend_responses,
+          labels: [proxy, code], match: { proxy: "^orders" } }
+      - { metric: haproxy_backend_response_time_average_seconds, type: gauge, as: haproxy_backend_response_time_ms,
+          scale: 1000, labels: [proxy], match: { proxy: "^orders" } }
+      - { metric: haproxy_backend_current_queue, type: gauge, as: haproxy_backend_queue, labels: [proxy], match: { proxy: "^orders" } }
+      - { metric: haproxy_backend_active_servers, type: gauge, as: haproxy_backend_active_servers, labels: [proxy],
+          match: { proxy: "^orders" } }
+      - { metric: haproxy_server_check_failures_total, type: counter, as: haproxy_server_check_failures, labels: [proxy],
+          match: { proxy: "^orders" } }
+      - { metric: haproxy_backend_connection_errors_total, type: counter, as: haproxy_backend_connection_errors, labels: [proxy],
+          match: { proxy: "^orders" } }
+
+  # ---------------------------------------------------------------- examples for Power's own stack
+  # Cilium (not used in this kind cluster): annotate the cilium-agent pods with
+  # prometheus.io/scrape: "true", prometheus.io/port: "9962", prometheus.io/job: cilium
+  # and uncomment:
+  # - name: cilium
+  #   rules:
+  #     - { metric: cilium_drop_count_total, type: counter, as: k8s_cilium_drops, labels: [reason, direction] }
+  #     - { metric: cilium_endpoint_state, type: gauge, as: k8s_cilium_endpoints, labels: [endpoint_state] }
+  #     - { metric: cilium_policy_l7_total, type: counter, as: k8s_cilium_policy_l7, labels: [rule] }
+  #
+  # Keess (internal tool with a Prometheus exporter): annotate its pods with
+  # prometheus.io/scrape: "true" and prometheus.io/job: keess. With no rules it
+  # gets the default passthrough (prom_<metric>); add rules like these to
+  # name and aggregate the series you care about:
+  # - name: keess
+  #   rules:
+  #     - { metric: keess_sync_total, type: counter, as: keess_syncs, labels: [kind, status] }

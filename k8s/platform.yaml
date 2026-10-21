@@ -1,0 +1,441 @@
+# Platform pieces added for the Power PoV success criteria:
+# Redis with Sentinel, MySQL, HAProxy, ingress routes (nginx + Traefik are
+# installed by Helm in up.sh), the Solid Queue worker, the Prometheus bridge,
+# the datastore exporter, and a deliberately leaky pod for OOM-kill demos.
+
+# ---------------------------------------------------------------- Redis + Sentinel
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-scripts
+  namespace: ijzerhaven
+data:
+  redis.sh: |
+    #!/bin/sh
+    # Start as a replica of whoever the sentinels say is master; redis-0 is the
+    # initial master when no sentinel knows one yet.
+    me="$(hostname).redis"
+    master="$(redis-cli -h redis-sentinel -p 26379 SENTINEL get-master-addr-by-name ijzerhaven 2>/dev/null | head -1)"
+    [ -z "$master" ] && [ "$(hostname)" != "redis-0" ] && master="redis-0.redis"
+    args="--maxmemory 64mb --maxmemory-policy allkeys-lru --replica-announce-ip $me"
+    if [ -n "$master" ] && [ "$master" != "$me" ]; then
+      exec redis-server $args --replicaof "$master" 6379
+    fi
+    exec redis-server $args
+  sentinel.sh: |
+    #!/bin/sh
+    cat > /data/sentinel.conf <<EOF
+    port 26379
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel announce-ip $(hostname).redis-sentinel
+    sentinel monitor ijzerhaven redis-0.redis 6379 2
+    sentinel down-after-milliseconds ijzerhaven 5000
+    sentinel failover-timeout ijzerhaven 30000
+    sentinel parallel-syncs ijzerhaven 1
+    EOF
+    exec redis-sentinel /data/sentinel.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: ijzerhaven
+spec:
+  clusterIP: None
+  selector: { app: redis }
+  ports: [{ name: redis, port: 6379 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: ijzerhaven
+spec:
+  serviceName: redis
+  replicas: 2
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      volumes:
+        - name: scripts
+          configMap: { name: redis-scripts, defaultMode: 0755 }
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          command: ["/scripts/redis.sh"]
+          ports: [{ containerPort: 6379 }]
+          volumeMounts: [{ name: scripts, mountPath: /scripts }]
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: ijzerhaven
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: redis-sentinel }
+  ports: [{ name: sentinel, port: 26379 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sentinel
+  namespace: ijzerhaven
+spec:
+  serviceName: redis-sentinel
+  replicas: 3
+  selector:
+    matchLabels: { app: redis-sentinel }
+  template:
+    metadata:
+      labels: { app: redis-sentinel }
+    spec:
+      volumes:
+        - name: scripts
+          configMap: { name: redis-scripts, defaultMode: 0755 }
+        - name: data
+          emptyDir: {}
+      containers:
+        - name: sentinel
+          image: redis:7.4-alpine
+          command: ["/scripts/sentinel.sh"]
+          ports: [{ containerPort: 26379 }]
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts }
+            - { name: data, mountPath: /data }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+# ---------------------------------------------------------------- MySQL
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mysql }
+  template:
+    metadata:
+      labels: { app: mysql }
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          args: ["--innodb-buffer-pool-size=128M", "--slow-query-log=ON", "--long-query-time=0.05"]
+          env:
+            - { name: MYSQL_ROOT_PASSWORD, value: ijzerhaven }
+            - { name: MYSQL_DATABASE, value: telemetry }
+            - { name: MYSQL_USER, value: telemetry }
+            - { name: MYSQL_PASSWORD, value: telemetry }
+          ports: [{ containerPort: 3306 }]
+          readinessProbe:
+            exec: { command: ["mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pijzerhaven"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 768Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: ijzerhaven
+spec:
+  selector: { app: mysql }
+  ports: [{ port: 3306 }]
+---
+# ---------------------------------------------------------------- HAProxy
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-web-pods
+  namespace: ijzerhaven
+spec:
+  clusterIP: None
+  selector: { app: orders-web }
+  ports: [{ name: http, port: 3000 }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+  namespace: ijzerhaven
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0 info
+    defaults
+      mode http
+      timeout connect 3s
+      timeout client 30s
+      timeout server 30s
+      log global
+      option httplog
+    resolvers k8s
+      parse-resolv-conf
+      hold valid 10s
+    frontend orders_in
+      bind :8080
+      default_backend orders_web
+    backend orders_web
+      balance roundrobin
+      option httpchk GET /healthz
+      server-template web 3 orders-web-pods.ijzerhaven.svc.cluster.local:3000 check resolvers k8s init-addr none
+    frontend stats
+      bind :8404
+      http-request use-service prometheus-exporter if { path /metrics }
+      stats enable
+      stats uri /stats
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: haproxy }
+  template:
+    metadata:
+      labels: { app: haproxy }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8404"
+        prometheus.io/job: haproxy
+    spec:
+      volumes:
+        - name: config
+          configMap: { name: haproxy-config }
+      containers:
+        - name: haproxy
+          image: haproxy:3.0-alpine
+          volumeMounts: [{ name: config, mountPath: /usr/local/etc/haproxy }]
+          ports: [{ containerPort: 8080 }, { containerPort: 8404 }]
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy
+  namespace: ijzerhaven
+spec:
+  selector: { app: haproxy }
+  ports: [{ name: http, port: 8080 }, { name: stats, port: 8404 }]
+---
+# ---------------------------------------------------------------- Ingress routes
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orders-nginx
+  namespace: ijzerhaven
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: orders.ijzerhaven.local
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: orders-web, port: { number: 3000 } } } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orders-traefik
+  namespace: ijzerhaven
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: orders.ijzerhaven.local
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: orders-web, port: { number: 3000 } } } }
+---
+# ---------------------------------------------------------------- Solid Queue worker (Rails)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fulfillment
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fulfillment }
+  template:
+    metadata:
+      labels: { app: fulfillment }
+    spec:
+      containers:
+        - name: fulfillment
+          image: ijzerhaven/fulfillment:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_SERVICE_NAME, value: fulfillment }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_COLLECTOR_ENDPOINT
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: collector-endpoint } }
+            - name: APP_REVISION
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: revision } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.pod.name=$(POD_NAME),k8s.node.name=$(NODE_NAME),k8s.namespace.name=ijzerhaven,k8s.deployment.name=fulfillment"
+            - { name: RAILS_ENV, value: production }
+            - { name: SECRET_KEY_BASE, value: demo-only-not-a-secret }
+            - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# ---------------------------------------------------------------- Datastore exporter
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datastore-metrics
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: datastore-metrics }
+  template:
+    metadata:
+      labels: { app: datastore-metrics }
+    spec:
+      containers:
+        - name: datastore-metrics
+          image: ijzerhaven/datastore-metrics:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_ENABLE_HOST_METRICS, value: "false" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: REDIS_NODES, value: "redis-0.redis:6379,redis-1.redis:6379" }
+            - { name: REDIS_SENTINEL_NODES, value: "redis-sentinel-0.redis-sentinel:26379,redis-sentinel-1.redis-sentinel:26379,redis-sentinel-2.redis-sentinel:26379" }
+            - { name: MYSQL_HOST, value: mysql }
+            - { name: MYSQL_USER, value: root }
+            - { name: MYSQL_PASSWORD, value: ijzerhaven }
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+---
+# ---------------------------------------------------------------- Prometheus bridge
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-bridge
+  namespace: ijzerhaven
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-bridge
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy, nodes/metrics, pods, services, endpoints]
+    verbs: [get, list]
+  - nonResourceURLs: ["/metrics"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-bridge
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: prometheus-bridge }
+subjects:
+  - { kind: ServiceAccount, name: prometheus-bridge, namespace: ijzerhaven }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-bridge
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: prometheus-bridge }
+  template:
+    metadata:
+      labels: { app: prometheus-bridge }
+    spec:
+      serviceAccountName: prometheus-bridge
+      # On the control-plane node's network, so it can reach the scheduler,
+      # controller manager and etcd metrics ports, which listen on 127.0.0.1.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector: { node-role.kubernetes.io/control-plane: "" }
+      tolerations:
+        - { key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule }
+      volumes:
+        - name: config
+          configMap: { name: prometheus-bridge }
+      containers:
+        - name: prometheus-bridge
+          image: ijzerhaven/prometheus-bridge:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_ENABLE_HOST_METRICS, value: "false" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - { name: APPSIGNAL_HOSTNAME, value: prometheus-bridge }
+            - { name: BRIDGE_CONFIG, value: /etc/bridge/bridge.yml }
+          volumeMounts: [{ name: config, mountPath: /etc/bridge }]
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+---
+# ---------------------------------------------------------------- OOM-kill demo
+# A "report renderer" with a memory leak: every 20-40 minutes it allocates
+# well past its 96Mi limit and gets OOM-killed, so the OOM graphs and the
+# "Pod OOM-killed" alert have something real to show.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: report-renderer
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: report-renderer }
+  template:
+    metadata:
+      labels: { app: report-renderer }
+    spec:
+      containers:
+        - name: report-renderer
+          image: ijzerhaven/traffic:1
+          imagePullPolicy: Never
+          command: ["ruby", "-e", "$stdout.sync = true; sleep rand(1200..2400); puts 'Rendering quarterly PDF report...'; chunks = []; loop { chunks << ('x' * 10_000_000); sleep 0.2 }"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 96Mi }

@@ -127,7 +127,86 @@ def collect(db)
     counter("pg_query_total_ms", q["total_exec_time"], tags)
   end
 
+  collect_slis(db)
+  collect_solid_queue(db)
   LOG.info("Reported Postgres metrics (#{total}/#{max} connections, #{d["size"].to_i / 1024 / 1024} MB)")
+end
+
+# Order SLIs, computed from the orders table itself. "Good" = the customer got
+# an answer that wasn't our fault: paid, or declined by their bank. "Bad" =
+# failed on our side. The SLO target and window are env-configurable; the
+# window is capped by how long this demo's data has existed.
+SLO_TARGET = Float(ENV.fetch("ORDER_SLO_TARGET_PCT", "95"))
+SLO_WINDOW_HOURS = Integer(ENV.fetch("ORDER_SLO_WINDOW_HOURS", "720"))
+
+def collect_slis(db)
+  return unless db.exec("SELECT to_regclass('orders') IS NOT NULL AS ok").getvalue(0, 0) == "t"
+  { "5m" => "5 minutes", "1h" => "1 hour", "slo_window" => "#{SLO_WINDOW_HOURS} hours" }.each do |label, interval|
+    r = db.exec_params(<<~SQL, [interval]).first
+      SELECT count(*) AS total, count(*) FILTER (WHERE status IN ('paid', 'declined')) AS good
+      FROM orders WHERE created_at > now() - $1::interval AND status <> 'pending'
+    SQL
+    next if r["total"].to_i.zero?
+    availability = r["good"].to_f / r["total"].to_f * 100
+    gauge("sli_order_availability_pct", availability.round(3), window: label)
+    next unless label == "slo_window"
+    # Error budget: the share of allowed failures still unspent this window.
+    allowed = (100 - SLO_TARGET) / 100 * r["total"].to_f
+    bad = r["total"].to_f - r["good"].to_f
+    gauge("slo_order_error_budget_remaining_pct", allowed.positive? ? ((allowed - bad) / allowed * 100).round(2) : nil)
+    gauge("slo_order_target_pct", SLO_TARGET)
+  end
+  # Burn rate over the last hour: 1.0 spends the budget exactly over the window.
+  r = db.exec(<<~SQL).first
+    SELECT count(*) AS total, count(*) FILTER (WHERE status = 'failed') AS bad
+    FROM orders WHERE created_at > now() - interval '1 hour' AND status <> 'pending'
+  SQL
+  if r["total"].to_i.positive?
+    gauge("slo_order_burn_rate_1h", ((r["bad"].to_f / r["total"].to_f) / ((100 - SLO_TARGET) / 100)).round(2))
+  end
+end
+
+# Solid Queue, read from its own tables: what's waiting, what's running and
+# for how long, what failed, and whether the worker processes are alive.
+def collect_solid_queue(db)
+  return unless db.exec("SELECT to_regclass('solid_queue_jobs') IS NOT NULL AS ok").getvalue(0, 0) == "t"
+
+  db.exec(<<~SQL).each { |r| gauge("solid_queue_ready_jobs", r["n"], queue: r["queue_name"]) }
+    SELECT queue_name, count(*) AS n FROM solid_queue_ready_executions GROUP BY queue_name
+  SQL
+  db.exec(<<~SQL).each { |r| gauge("solid_queue_queue_latency_seconds", r["age"], queue: r["queue_name"]) }
+    SELECT queue_name, extract(epoch FROM now() - min(created_at)) AS age
+    FROM solid_queue_ready_executions GROUP BY queue_name
+  SQL
+  gauge("solid_queue_scheduled_jobs", db.exec("SELECT count(*) FROM solid_queue_scheduled_executions").getvalue(0, 0))
+
+  running = db.exec(<<~SQL).to_a
+    SELECT j.class_name, j.queue_name, extract(epoch FROM now() - c.created_at) AS running_for
+    FROM solid_queue_claimed_executions c JOIN solid_queue_jobs j ON j.id = c.job_id
+  SQL
+  gauge("solid_queue_running_jobs", running.size)
+  running.group_by { |r| r["class_name"] }.each do |klass, rows|
+    gauge("solid_queue_running_job_seconds", rows.map { |r| r["running_for"].to_f }.max.round, job_class: klass)
+  end
+
+  db.exec(<<~SQL).each { |r| gauge("solid_queue_failed_jobs", r["n"], job_class: r["class_name"]) }
+    SELECT j.class_name, count(*) AS n
+    FROM solid_queue_failed_executions f JOIN solid_queue_jobs j ON j.id = f.job_id GROUP BY j.class_name
+  SQL
+  db.exec(<<~SQL).each do |r|
+    SELECT class_name, count(*) AS n, avg(extract(epoch FROM finished_at - created_at)) AS avg_s
+    FROM solid_queue_jobs WHERE finished_at > now() - interval '15 minutes' GROUP BY class_name
+  SQL
+    gauge("solid_queue_finished_jobs_15m", r["n"], job_class: r["class_name"])
+    gauge("solid_queue_enqueue_to_finish_seconds_15m", r["avg_s"].to_f.round(2), job_class: r["class_name"])
+  end
+  db.exec(<<~SQL).each do |r|
+    SELECT kind, count(*) AS n, max(extract(epoch FROM now() - last_heartbeat_at)) AS oldest
+    FROM solid_queue_processes GROUP BY kind
+  SQL
+    gauge("solid_queue_processes", r["n"], kind: r["kind"].downcase)
+    gauge("solid_queue_heartbeat_age_seconds", r["oldest"].to_f.round, kind: r["kind"].downcase)
+  end
 end
 
 db = nil

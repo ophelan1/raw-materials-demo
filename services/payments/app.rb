@@ -8,6 +8,7 @@
 require "json"
 require "logger"
 require "openssl"
+require "redis"
 require "securerandom"
 require "sequel"
 require "sinatra/base"
@@ -35,6 +36,12 @@ DB.transaction do
     DateTime :created_at, null: false
   end
 end
+
+REDIS = Redis.new(
+  name: "ijzerhaven", role: :master,
+  sentinels: ENV.fetch("REDIS_SENTINELS", "redis-sentinel:26379").split(",").map { |hp| h, p = hp.split(":"); { host: h, port: p.to_i } },
+  connect_timeout: 0.5, read_timeout: 0.5, write_timeout: 0.5, reconnect_attempts: 1
+)
 
 # Raised when the mTLS session with the acquiring bank can't be set up.
 class AcquirerTLSError < StandardError; end
@@ -112,6 +119,17 @@ class PaymentsAPI < Sinatra::Base
     }
     Appsignal.add_tags(order_reference: attempt[:order_reference], payment_method: attempt[:payment_method],
       customer: attempt[:customer])
+
+    # Idempotency: a retried charge for the same order must not hit the bank
+    # twice. Redis being down doesn't block payments; it only loses this guard.
+    begin
+      unless REDIS.set("charge:#{attempt[:order_reference]}", attempt[:attempt_id], nx: true, ex: 3600)
+        Appsignal.increment_counter("payment_duplicates_blocked", 1)
+        halt 409, JSON.generate(error: "duplicate_charge", order_reference: attempt[:order_reference])
+      end
+    rescue Redis::BaseError => e
+      LOG.warn("Idempotency check skipped: Redis unavailable", error: e.class.name, message: e.message)
+    end
 
     begin
       decline =

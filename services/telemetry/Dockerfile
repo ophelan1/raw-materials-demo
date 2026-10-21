@@ -1,7 +1,7 @@
 FROM ruby:3.4-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential libpq-dev \
+ && apt-get install -y --no-install-recommends build-essential libpq-dev default-libmysqlclient-dev \
  && rm -rf /var/lib/apt/lists/*
 
 ENV APPSIGNAL_APP_PATH=/app

@@ -1,0 +1,61 @@
+import { useEffect } from "react";
+import { Link, Outlet, matchRoutes, useLocation } from "react-router-dom";
+import { captureError, setRouteTemplate } from "@appsignal/browser";
+import { ErrorBoundary } from "@appsignal/browser/react";
+import Catalogue from "./pages/Catalogue";
+import OrderForm from "./pages/OrderForm";
+import OrderStatus from "./pages/OrderStatus";
+
+// Reports the matched route template ("/orders/:reference"), not the URL, so
+// errors and web vitals group per page instead of per order.
+function RouteReporter() {
+  const location = useLocation();
+  useEffect(() => {
+    const matches = matchRoutes(routes, location) || [];
+    let template = "";
+    for (const { route } of matches) {
+      if (!route.path) continue;
+      template = route.path.startsWith("/") ? route.path : `${template}/${route.path}`;
+    }
+    setRouteTemplate(template.replace(/\/+/g, "/") || "/");
+  }, [location.pathname]);
+  return null;
+}
+
+function Page({ children }) {
+  return (
+    <ErrorBoundary captureError={captureError} fallback={<p className="notice error">Something went wrong on this page.</p>}>
+      {children}
+    </ErrorBoundary>
+  );
+}
+
+function Layout() {
+  return (
+    <>
+      <RouteReporter />
+      <header className="site-header">
+        <Link to="/" className="brand">Ijzerhaven <span>Raw Materials</span></Link>
+        <nav>
+          <Link to="/">Catalogue</Link>
+        </nav>
+      </header>
+      <main>
+        <Outlet />
+      </main>
+      <footer>Rotterdam · Delft · Bulk metals, polymers and minerals for industry</footer>
+    </>
+  );
+}
+
+export const routes = [
+  {
+    path: "/",
+    element: <Layout />,
+    children: [
+      { index: true, element: <Page><Catalogue /></Page> },
+      { path: "order/:sku", element: <Page><OrderForm /></Page> },
+      { path: "orders/:reference", element: <Page><OrderStatus /></Page> },
+    ],
+  },
+];

@@ -17,8 +17,11 @@ fi
 kubectl config use-context kind-ijzerhaven >/dev/null
 
 echo "==> Building images"
-for svc in orders-web payments traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge; do
-  docker build -q -t "ijzerhaven/$svc:1" "services/$svc" >/dev/null
+for svc in orders-web payments traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge storefront; do
+  docker build -q -t "ijzerhaven/$svc:1" \
+    --build-arg VITE_APPSIGNAL_FRONTEND_API_KEY="${APPSIGNAL_FRONTEND_API_KEY:-}" \
+    --build-arg VITE_APP_REVISION="$(git rev-parse HEAD 2>/dev/null || echo dev)" \
+    "services/$svc" >/dev/null
   # Load via a single-platform archive: kind's direct load fails on multi-platform images.
   docker save --platform "linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" -o "/tmp/ijzerhaven-$svc.tar" "ijzerhaven/$svc:1"
   kind load image-archive --name ijzerhaven "/tmp/ijzerhaven-$svc.tar" >/dev/null
@@ -65,7 +68,7 @@ kubectl -n ijzerhaven create configmap prometheus-bridge --from-file=bridge.yml=
 kubectl apply -f k8s/platform.yaml >/dev/null
 # Apps create their tables on boot, so Postgres must be up before they restart.
 kubectl -n ijzerhaven rollout status deployment postgres --timeout=120s >/dev/null
-kubectl -n ijzerhaven rollout restart deployment orders-web payments-api traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge >/dev/null
+kubectl -n ijzerhaven rollout restart deployment orders-web payments-api traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge storefront >/dev/null
 kubectl -n ijzerhaven rollout status deployment orders-web payments-api --timeout=180s
 
 if [ -n "${APPSIGNAL_K8S_API_KEY:-}" ]; then
@@ -82,4 +85,4 @@ fi
 echo
 kubectl get pods -A -o wide | grep -E "NAME|ijzerhaven |appsignal "
 echo
-echo "Catalogue: http://localhost:8080   Traffic log: kubectl -n ijzerhaven logs -f deploy/traffic"
+echo "Storefront: http://localhost:8080   Traffic log: kubectl -n ijzerhaven logs -f deploy/traffic"

@@ -24,7 +24,9 @@ def counter(name, value, tags = {})
   key = [name, tags]
   prev = $previous[key]
   $previous[key] = value.to_f
-  Appsignal.increment_counter(name, value.to_f - prev, tags) if prev && value.to_f >= prev
+  return nil unless prev && value.to_f >= prev
+  Appsignal.increment_counter(name, value.to_f - prev, tags)
+  value.to_f - prev
 end
 
 def gauge(name, value, tags = {})

@@ -11,6 +11,7 @@ require "net/http"
 require "redis"
 require "securerandom"
 require "sequel"
+require "timeout"
 require "sinatra/base"
 require "appsignal"
 
@@ -97,33 +98,55 @@ class PaymentsClient
   end
 end
 
-# Tells the warehouse to load a paid order, over MQTT (QoS 1). One shared
-# connection per process; a broker outage logs a warning but never fails the
-# order, since the payment already went through.
+# Tells the warehouse to load a paid order, over MQTT (QoS 1). A broker outage
+# logs a warning but never fails the order, since the payment already went
+# through.
+#
+# The MQTT client lives in its own thread: the mqtt gem re-raises connection
+# errors into whichever thread created the client, and that must not be a
+# Puma request thread. Requests hand the message over and wait (briefly) for
+# the PUBACK, so the publish.mqtt span still measures the real round trip.
 class Dispatch
-  @lock = Mutex.new
+  @outbox = Queue.new
 
   def self.publish(order)
     site = order[:sku].start_with?("CEM", "SI-") ? "delft" : "rotterdam"
     topic = "ijzerhaven/dispatch/#{site}"
     payload = JSON.generate(order_reference: order[:reference], customer: order[:customer], sku: order[:sku],
       quantity: order[:quantity], ts: (Time.now.to_f * 1000).to_i)
-    Appsignal.instrument("publish.mqtt", "PUBLISH #{topic}") do
-      @lock.synchronize { client.publish(topic, payload, false, 1) }
+    result = Appsignal.instrument("publish.mqtt", "PUBLISH #{topic}") do
+      reply = Queue.new
+      @outbox << [topic, payload, reply]
+      reply.pop(timeout: 2) || Timeout::Error.new("no PUBACK within 2s")
     end
+    raise result if result.is_a?(Exception)
     Appsignal.increment_counter("mqtt_client_published", 1, client_type: "orders-web", topic_type: "dispatch")
   rescue StandardError => e
-    @client = nil
     Appsignal.increment_counter("mqtt_client_errors", 1, client_type: "orders-web", error: e.class.name)
     LOG.warn("Dispatch for #{order[:reference]} not sent over MQTT", error: e.class.name, message: e.message)
   end
 
-  def self.client
-    @client ||= MQTT::Client.new(
-      host: ENV.fetch("MQTT_HOST", "rabbitmq"), port: 1883,
-      username: ENV.fetch("MQTT_USERNAME", ""), password: ENV.fetch("MQTT_PASSWORD", ""),
-      client_id: "orders-web-#{ENV.fetch("POD_NAME", Process.pid)}", clean_session: true, keep_alive: 30
-    ).tap(&:connect)
+  @publisher = Thread.new do
+    client = nil
+    loop do
+      reply = nil
+      begin
+        topic, payload, reply = @outbox.pop
+        client ||= MQTT::Client.new(
+          host: ENV.fetch("MQTT_HOST", "rabbitmq"), port: 1883,
+          username: ENV.fetch("MQTT_USERNAME", ""), password: ENV.fetch("MQTT_PASSWORD", ""),
+          client_id: "orders-web-#{ENV.fetch("POD_NAME", Process.pid)}", clean_session: true, keep_alive: 30
+        ).tap(&:connect)
+        client.publish(topic, payload, false, 1)
+        reply << :ok
+      rescue StandardError => e
+        # Also lands here when the gem re-raises a dropped connection into
+        # this thread while it waits for work; reconnect on the next message.
+        client&.disconnect(false) rescue nil
+        client = nil
+        reply&.push(e)
+      end
+    end
   end
 end
 

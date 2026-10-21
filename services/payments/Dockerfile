@@ -4,7 +4,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential libpq-dev curl \
  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# Mirror the repository layout so AppSignal backtrace paths (relative to
+# APPSIGNAL_APP_PATH) match files on GitHub: services/payments/app.rb.
+ENV APPSIGNAL_APP_PATH=/app
+WORKDIR /app/services/payments
 COPY Gemfile ./
 RUN bundle install --jobs 4
 

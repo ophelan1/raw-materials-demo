@@ -5,7 +5,7 @@ running on a 3-node Kubernetes cluster (kind, on Colima), standing in for a
 self-hosted bare-metal cluster.
 
 ```
- traffic (simulated buyers, ~4 req/s)
+ traffic (simulated buyers, 1 request every ~10 s)
     │
     ▼
  orders-web ×3  (Ruby / Sinatra / Puma)  ──SQL──▶  postgres
@@ -41,6 +41,11 @@ orders-web marks the order failed (`PaymentFailedError`, HTTP 502). **Invoice**
 orders (~25%) don't touch the acquirer and keep succeeding — a partial outage,
 not a total one. ~1.5% of card payments are ordinary bank declines (402, not
 errors) all the time, as background noise.
+
+Traffic is kept low for a 50K-requests/month AppSignal plan: ~6 requests a
+minute, and each order counts twice (orders-web + payments-api), so about
+10 AppSignal requests a minute, ~14K a day. Change `REQUESTS_PER_SECOND` on
+the traffic deployment in `k8s/app.yaml` to adjust.
 
 Tune with `FAILURE_INTERVAL_MINUTES` / `FAILURE_DURATION_SECONDS` on the
 payments-api deployment in `k8s/app.yaml`.

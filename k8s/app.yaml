@@ -195,6 +195,6 @@ spec:
           imagePullPolicy: Never
           env:
             - { name: ORDERS_URL, value: "http://orders-web:3000" }
-            - { name: REQUESTS_PER_SECOND, value: "4" }
+            - { name: REQUESTS_PER_SECOND, value: "0.1" }
           resources:
             requests: { cpu: 20m, memory: 64Mi }

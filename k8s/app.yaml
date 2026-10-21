@@ -77,7 +77,7 @@ spec:
               valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
             - name: APPSIGNAL_COLLECTOR_ENDPOINT
               valueFrom: { secretKeyRef: { name: appsignal-app, key: collector-endpoint } }
-            - name: APPSIGNAL_REVISION
+            - name: APP_REVISION
               valueFrom: { secretKeyRef: { name: appsignal-app, key: revision } }
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
@@ -144,7 +144,7 @@ spec:
               valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
             - name: APPSIGNAL_COLLECTOR_ENDPOINT
               valueFrom: { secretKeyRef: { name: appsignal-app, key: collector-endpoint } }
-            - name: APPSIGNAL_REVISION
+            - name: APP_REVISION
               valueFrom: { secretKeyRef: { name: appsignal-app, key: revision } }
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }

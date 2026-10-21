@@ -17,7 +17,7 @@ fi
 kubectl config use-context kind-ijzerhaven >/dev/null
 
 echo "==> Building images"
-for svc in orders-web payments traffic capacity-metrics; do
+for svc in orders-web payments traffic capacity-metrics postgres-metrics; do
   docker build -q -t "ijzerhaven/$svc:1" "services/$svc" >/dev/null
   kind load docker-image --name ijzerhaven "ijzerhaven/$svc:1" >/dev/null
 done
@@ -44,7 +44,7 @@ echo "==> Deploying app"
 kubectl apply -f k8s/app.yaml >/dev/null
 # Apps create their tables on boot, so Postgres must be up before they restart.
 kubectl -n ijzerhaven rollout status deployment postgres --timeout=120s >/dev/null
-kubectl -n ijzerhaven rollout restart deployment orders-web payments-api traffic capacity-metrics >/dev/null
+kubectl -n ijzerhaven rollout restart deployment orders-web payments-api traffic capacity-metrics postgres-metrics >/dev/null
 kubectl -n ijzerhaven rollout status deployment orders-web payments-api --timeout=180s
 
 if [ -n "${APPSIGNAL_K8S_API_KEY:-}" ]; then

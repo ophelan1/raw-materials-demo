@@ -20,6 +20,8 @@ spec:
       containers:
         - name: postgres
           image: postgres:17-alpine
+          # pg_stat_statements gives per-query timings for the SQL dashboard.
+          args: ["-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
           env:
             - { name: POSTGRES_USER, value: ijzerhaven }
             - { name: POSTGRES_PASSWORD, value: ijzerhaven }
@@ -257,6 +259,40 @@ spec:
               valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
             - name: APPSIGNAL_HOSTNAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+---
+# ---------------------------------------------------------------- postgres-metrics
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-metrics
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres-metrics }
+  template:
+    metadata:
+      labels: { app: postgres-metrics }
+    spec:
+      containers:
+        - name: postgres-metrics
+          image: ijzerhaven/postgres-metrics:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_ENABLE_HOST_METRICS, value: "false" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
+            - { name: PGDATABASE, value: orders }
           resources:
             requests: { cpu: 20m, memory: 96Mi }
             limits: { memory: 256Mi }

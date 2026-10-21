@@ -99,7 +99,9 @@ class PaymentsAPI < Sinatra::Base
   set :host_authorization, { permitted_hosts: [] }
 
   before do
-    Appsignal.add_tags(pod: ENV["POD_NAME"], node: ENV["NODE_NAME"])
+    Appsignal.add_tags(pod: ENV["POD_NAME"], node: ENV["NODE_NAME"],
+      user_id: request.env["HTTP_X_USER_ID"], user_email: request.env["HTTP_X_USER_EMAIL"],
+      account_tier: request.env["HTTP_X_ACCOUNT_TIER"])
   end
 
   get "/healthz" do

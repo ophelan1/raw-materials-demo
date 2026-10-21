@@ -24,7 +24,12 @@ a { color: inherit; }
 }
 .brand { font-weight: 800; letter-spacing: 0.02em; text-decoration: none; font-size: 1.15rem; }
 .brand span { font-weight: 400; opacity: 0.75; }
+.site-header nav { display: flex; align-items: center; gap: 20px; }
 .site-header nav a { text-decoration: none; opacity: 0.85; }
+.account { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 0.85rem; }
+.account span { opacity: 0.7; }
+.account select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #4a535e; background: #2a313a; color: #fff; max-width: 260px; }
+.ordering-as { margin: 0; color: var(--muted); font-size: 0.9rem; }
 
 main { max-width: 1100px; margin: 0 auto; padding: 32px; min-height: calc(100vh - 140px); }
 footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 24px; }
@@ -78,5 +83,6 @@ legend { font-weight: 600; font-size: 0.9rem; margin-bottom: 6px; }
 
 @media (max-width: 640px) {
   main { padding: 16px; }
-  .site-header { padding: 14px 16px; }
+  .site-header { padding: 14px 16px; flex-wrap: wrap; gap: 10px; }
+  .account span { display: none; }
 }

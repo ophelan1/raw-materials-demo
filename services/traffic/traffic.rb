@@ -17,6 +17,19 @@ CUSTOMERS = [
   "Delft Steelworks", "Rotterdam Fabrication BV", "Eindhoven Precision Parts", "Twente Plastics",
   "Zeeland Shipyards", "Utrecht Construction Group", "Groningen Cable Co", "Maas Foundry"
 ].freeze
+# The buyer at each customer, matching the storefront's accounts
+# (services/storefront/src/account.js), so a user's API and browser orders
+# carry the same user tags.
+USERS = {
+  "Delft Steelworks" => ["usr_1001", "anouk.jansen@delftsteelworks.example", "key_account"],
+  "Rotterdam Fabrication BV" => ["usr_1002", "d.visser@rotterdamfab.example", "key_account"],
+  "Eindhoven Precision Parts" => ["usr_1003", "sanne@eindhovenprecision.example", "standard"],
+  "Twente Plastics" => ["usr_1004", "inkoop@twenteplastics.example", "standard"],
+  "Zeeland Shipyards" => ["usr_1005", "f.bakker@zeelandshipyards.example", "key_account"],
+  "Utrecht Construction Group" => ["usr_1006", "thijs.smit@utrechtconstruction.example", "standard"],
+  "Groningen Cable Co" => ["usr_1007", "emma.meijer@groningencable.example", "trial"],
+  "Maas Foundry" => ["usr_1008", "r.dewit@maasfoundry.example", "standard"]
+}.freeze
 SKUS = %w[HRC-S235 AL-INGOT-99 CU-CATH-A NI-BRIQ ZN-SHG PP-H350 SI-SAND-40 CEM-I-52].freeze
 
 $stdout.sync = true
@@ -25,6 +38,7 @@ def call(request, customer)
   name = ENTRYPOINTS.keys.sample
   uri, host = ENTRYPOINTS[name]
   request["X-Customer"] = customer
+  request["X-User-Id"], request["X-User-Email"], request["X-Account-Tier"] = USERS.fetch(customer)
   request["X-Entrypoint"] = name
   request["Content-Type"] = "application/json"
   request["Host"] = host if host

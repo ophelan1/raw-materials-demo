@@ -75,11 +75,13 @@ Schema.migrate!
 class PaymentsClient
   URL = URI(ENV.fetch("PAYMENTS_URL", "http://payments-api:4000"))
 
-  def self.charge(order)
+  # user: the X-User-* headers of the incoming request, passed on so
+  # payments-api spans carry the same user tags.
+  def self.charge(order, user = {})
     http = Net::HTTP.new(URL.host, URL.port)
     http.open_timeout = 2
     http.read_timeout = 5
-    request = Net::HTTP::Post.new("/charges", "Content-Type" => "application/json")
+    request = Net::HTTP::Post.new("/charges", { "Content-Type" => "application/json" }.merge(user.compact))
     request.body = JSON.generate(
       order_reference: order[:reference],
       customer: order[:customer],
@@ -239,6 +241,9 @@ class OrdersWeb < Sinatra::Base
     @started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     Appsignal.add_tags(
       customer: request.env["HTTP_X_CUSTOMER"],
+      user_id: request.env["HTTP_X_USER_ID"],
+      user_email: request.env["HTTP_X_USER_EMAIL"],
+      account_tier: request.env["HTTP_X_ACCOUNT_TIER"],
       pod: ENV["POD_NAME"],
       node: ENV["NODE_NAME"],
       entrypoint: request.env["HTTP_X_ENTRYPOINT"] || "direct"
@@ -254,6 +259,7 @@ class OrdersWeb < Sinatra::Base
     LOG.info("api_response", event: response.status >= 500 ? "api_error" : "api_response",
       http_method: request.request_method, path: request.fullpath, http_status: response.status,
       duration_ms: duration_ms, customer: request.env["HTTP_X_CUSTOMER"].to_s,
+      user_id: request.env["HTTP_X_USER_ID"].to_s,
       entrypoint: request.env["HTTP_X_ENTRYPOINT"] || "direct")
   end
 
@@ -324,7 +330,9 @@ class OrdersWeb < Sinatra::Base
     order[:id] = DB[:orders].insert(order)
     Appsignal.add_tags(order_reference: order[:reference], sku: order[:sku], payment_method: payment_method)
 
-    status_code, payment = PaymentsClient.charge(order)
+    status_code, payment = PaymentsClient.charge(order,
+      "X-User-Id" => request.env["HTTP_X_USER_ID"], "X-User-Email" => request.env["HTTP_X_USER_EMAIL"],
+      "X-Account-Tier" => request.env["HTTP_X_ACCOUNT_TIER"])
 
     case status_code
     when 201

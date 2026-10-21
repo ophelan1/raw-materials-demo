@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { captureError } from "@appsignal/browser";
-import { CUSTOMERS, euro, getMaterials, placeOrder } from "../api";
+import { euro, getMaterials, placeOrder } from "../api";
+import { getAccount } from "../account";
 import { track } from "../track";
 
 // The answer the API gave, as a funnel step.
@@ -11,7 +12,7 @@ export default function OrderForm() {
   const { sku } = useParams();
   const navigate = useNavigate();
   const [material, setMaterial] = useState(null);
-  const [form, setForm] = useState({ customer: CUSTOMERS[0], quantity: 5, payment_method: "card" });
+  const [form, setForm] = useState({ quantity: 5, payment_method: "card" });
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const openedAt = useRef(performance.now());
@@ -33,7 +34,7 @@ export default function OrderForm() {
     // A second try after a failed payment is a frustrated customer, not a new order.
     if (failures.current > 0) track("retry_after_failure", { payment_method: form.payment_method });
     try {
-      const { status, body } = await placeOrder({ ...form, sku, quantity: Number(form.quantity) });
+      const { status, body } = await placeOrder({ ...form, customer: getAccount().customer, sku, quantity: Number(form.quantity) });
       track("funnel", { step: OUTCOMES[status] || "order_error", sku, payment_method: form.payment_method });
       if (status === 201) {
         navigate(`/orders/${body.reference}`, { state: { justPlaced: true } });
@@ -66,12 +67,7 @@ export default function OrderForm() {
       <p className="muted">{material.sku} · {euro(material.price_cents)} per {material.unit} · {material.stock.toLocaleString("nl-NL")} in stock</p>
 
       <form onSubmit={submit}>
-        <label>
-          Customer
-          <select value={form.customer} onChange={(e) => setForm({ ...form, customer: e.target.value })}>
-            {CUSTOMERS.map((c) => <option key={c}>{c}</option>)}
-          </select>
-        </label>
+        <p className="ordering-as">Ordering for <strong>{getAccount().customer}</strong> as {getAccount().name}</p>
         <label>
           Quantity ({material.unit}s)
           <input type="number" min="1" max="500" value={form.quantity}

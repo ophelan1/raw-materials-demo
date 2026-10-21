@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, Outlet, matchRoutes, useLocation } from "react-router-dom";
 import { captureError, setRouteTemplate } from "@appsignal/browser";
 import { ErrorBoundary } from "@appsignal/browser/react";
@@ -6,6 +6,7 @@ import Catalogue from "./pages/Catalogue";
 import OrderForm from "./pages/OrderForm";
 import OrderStatus from "./pages/OrderStatus";
 import { setTrackedRoute, track } from "./track";
+import { ACCOUNTS, getAccount, switchAccount } from "./account";
 
 // Reports the matched route template ("/orders/:reference"), not the URL, so
 // errors and web vitals group per page instead of per order.
@@ -34,6 +35,19 @@ function Page({ children }) {
   );
 }
 
+// No real login in the demo: pick which customer account you're signed in as.
+function AccountSwitcher() {
+  const [account, setAccount] = useState(getAccount());
+  return (
+    <label className="account">
+      <span>Signed in as</span>
+      <select value={account.id} onChange={(e) => setAccount(switchAccount(e.target.value))}>
+        {ACCOUNTS.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.customer}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function Layout() {
   return (
     <>
@@ -42,6 +56,7 @@ function Layout() {
         <Link to="/" className="brand">Ijzerhaven <span>Raw Materials</span></Link>
         <nav>
           <Link to="/">Catalogue</Link>
+          <AccountSwitcher />
         </nav>
       </header>
       <main>

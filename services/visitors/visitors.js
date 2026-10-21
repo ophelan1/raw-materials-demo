@@ -52,7 +52,8 @@ async function visit() {
     await think();
     if (chance(0.2)) return log.push("abandoned");
 
-    await page.select("select", pick(await page.$$eval("select option", (os) => os.map((o) => o.value))));
+    // New visitors get a random account; sometimes switch, like a buyer covering for a colleague.
+    if (chance(0.15)) await page.select(".account select", pick(await page.$$eval(".account option", (os) => os.map((o) => o.value))));
     const quantity = await page.$('input[type="number"]');
     await quantity.click({ clickCount: 3 });
     await quantity.type(String(1 + Math.floor(Math.random() * 12)));

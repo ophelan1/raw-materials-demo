@@ -35,7 +35,7 @@ def counter(name, value, tags = {})
 end
 
 def pct(part, whole)
-  whole.to_f.positive? ? (part.to_f / whole * 100).round(2) : nil
+  whole.to_f.positive? ? (part.to_f / whole.to_f * 100).round(2) : nil
 end
 
 def connect

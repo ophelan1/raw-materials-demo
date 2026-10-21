@@ -115,7 +115,10 @@ def collect(db)
            calls, total_exec_time, mean_exec_time, rows
     FROM pg_stat_statements
     WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-      AND query NOT ILIKE '%pg_stat%' AND query NOT ILIKE '%pg_locks%' AND query NOT ILIKE '%pg_database%'
+      -- Only the app's own reads and writes: no monitoring, DDL, session
+      -- setup or catalog lookups.
+      AND query ~* '^\\s*(SELECT|INSERT|UPDATE|DELETE)'
+      AND query !~* '(pg_stat|pg_locks|pg_database|pg_class|pg_attribute|pg_catalog|current_setting|pg_advisory)'
     ORDER BY total_exec_time DESC LIMIT #{TOP_QUERIES}
   SQL
     tags = { query: q["query"] }

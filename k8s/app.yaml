@@ -314,6 +314,9 @@ data:
     mqtt.vhost = /
     mqtt.exchange = amq.topic
     mqtt.prefetch = 10
+    # RabbitMQ sizes its memory alarm from the node's RAM, not the pod limit.
+    # Pin it below the 768Mi limit so the alarm fires before an OOM kill.
+    vm_memory_high_watermark.absolute = 512MiB
 ---
 apiVersion: apps/v1
 kind: Deployment

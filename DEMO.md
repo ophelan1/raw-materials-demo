@@ -94,3 +94,26 @@ kubectl -n ijzerhaven exec deploy/payments-api -- ls /etc/payments/tls
 Metrics emitted: `orders` (counter; `status`, `payment_method`),
 `order_value_eur` (distribution), `payment_attempts` (counter; `result`,
 `payment_method`) — good material for a custom "Orders" dashboard.
+
+## MQTT (RabbitMQ)
+
+RabbitMQ runs the MQTT plugin (`k8s/app.yaml`, ConfigMap `rabbitmq-config`).
+
+- `sensors`: 12 silo level sensors (Rotterdam and Delft), one MQTT client each,
+  publishing `ijzerhaven/<site>/silo/<sku>/level` at QoS 1 every ~15 s, with a
+  retained `status` and a last will of `offline`. About once every 25 minutes
+  per sensor one drops off without disconnecting and returns 20–60 s later.
+- `telemetry`: persistent-session consumer of levels, status and
+  `ijzerhaven/dispatch/#`; writes `silo_levels` to Postgres. It **pauses for
+  90 s at :05, :20, :35 and :50**, so the backlog and end-to-end latency
+  graphs climb and then drain.
+- `orders-web`: every paid order publishes a dispatch message, visible as a
+  `publish.mqtt` span in the order trace.
+- `mqtt-metrics`: broker metrics. MQTT message rates come from the Prometheus
+  endpoint (`:15692`), because the management API stopped reporting them in
+  RabbitMQ 3.12. Backlog per session comes from the management API.
+
+Dashboard: "MQTT: silo telemetry". Good demo moments: watch "Subscriber
+backlog" and "End-to-end latency" at :05/:20/:35/:50, and point out that the
+pause is a consumer problem, not a sensor problem, because every sensor's
+"seconds since last reading" climbs at once.

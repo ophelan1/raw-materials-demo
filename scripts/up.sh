@@ -68,7 +68,7 @@ kubectl -n ijzerhaven create configmap prometheus-bridge --from-file=bridge.yml=
 kubectl apply -f k8s/platform.yaml >/dev/null
 # Apps create their tables on boot, so Postgres must be up before they restart.
 kubectl -n ijzerhaven rollout status deployment postgres --timeout=120s >/dev/null
-kubectl -n ijzerhaven rollout restart deployment orders-web payments-api traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge storefront >/dev/null
+kubectl -n ijzerhaven rollout restart deployment orders-web payments-api traffic capacity-metrics postgres-metrics sensors telemetry mqtt-metrics fulfillment datastore-metrics prometheus-bridge storefront visitors >/dev/null
 kubectl -n ijzerhaven rollout status deployment orders-web payments-api --timeout=180s
 
 if [ -n "${APPSIGNAL_K8S_API_KEY:-}" ]; then

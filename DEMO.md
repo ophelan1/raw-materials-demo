@@ -40,6 +40,12 @@ Pods are spread one-per-node across `ijzerhaven-control-plane`,
      records them as `storefront_*` custom metrics. That action is in
      `APPSIGNAL_IGNORE_ACTIONS`, so it creates no traces or billed requests,
      and every tag value is checked against a fixed list.
+   - Each browser is "signed in" as one of the eight customer buyers (switch in
+     the header). Browser errors carry `user_id`, `user_email`, `customer` and
+     `account_tier`, and the same values ride `X-User-*` headers into orders-web
+     and payments-api span tags. The traffic generator uses the same users, so
+     filtering traces or errors by `user_id` finds a buyer's browser and API
+     orders together.
 
 Tear down with `scripts/down.sh`, then `colima stop`.
 

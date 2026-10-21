@@ -33,8 +33,8 @@ Pods are spread one-per-node across `ijzerhaven-control-plane`,
 3. Storefront (React, AppSignal for Browser): http://localhost:8080. Place an
    order during a failure window to see the browser error and its back-end trace
    together. Browser data lands in the `browser` namespace.
-   - `visitors` runs headless Chromium shoppers (one visit every ~3.5 min,
-     about 1,000 API requests a day; set `VISIT_MINUTES` to change it), so web
+   - `visitors` runs headless Chromium shoppers (one visit every ~1 min,
+     about 3,500 API requests a day; set `VISIT_MINUTES` to change it), so web
      vitals and the storefront dashboard have data between demos.
    - The page batches behaviour events to `POST /api/rum` on orders-web, which
      records them as `storefront_*` custom metrics. That action is in

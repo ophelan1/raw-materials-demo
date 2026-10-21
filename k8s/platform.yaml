@@ -500,7 +500,7 @@ spec:
           imagePullPolicy: Never
           env:
             - { name: STOREFRONT_URL, value: "http://storefront" }
-            - { name: VISIT_MINUTES, value: "3.5" }
+            - { name: VISIT_MINUTES, value: "1" }
           resources:
             requests: { cpu: 50m, memory: 256Mi }
             limits: { memory: 768Mi }

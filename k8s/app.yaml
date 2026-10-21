@@ -30,7 +30,7 @@ spec:
             periodSeconds: 5
           resources:
             requests: { cpu: 100m, memory: 256Mi }
-            limits: { memory: 512Mi }
+            limits: { cpu: 500m, memory: 512Mi }
 ---
 apiVersion: v1
 kind: Service
@@ -88,12 +88,15 @@ spec:
             - { name: APPSIGNAL_SERVICE_NAME, value: orders-web }
             - { name: DATABASE_URL, value: "postgres://ijzerhaven:ijzerhaven@postgres:5432/orders" }
             - { name: PAYMENTS_URL, value: "http://payments-api:4000" }
+            # Resource attributes land on every span this pod sends.
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.pod.name=$(POD_NAME),k8s.node.name=$(NODE_NAME),k8s.namespace.name=ijzerhaven,k8s.deployment.name=orders-web,k8s.manifest.url=https://github.com/ophelan1/raw-materials-demo/blob/$(APP_REVISION)/k8s/app.yaml#L45"
           readinessProbe:
             httpGet: { path: /healthz, port: 3000 }
             periodSeconds: 5
           resources:
             requests: { cpu: 100m, memory: 192Mi }
-            limits: { memory: 512Mi }
+            limits: { cpu: 500m, memory: 512Mi }
 ---
 apiVersion: v1
 kind: Service
@@ -157,6 +160,9 @@ spec:
             - { name: ACQUIRER_TLS_DIR, value: /etc/payments/tls }
             - { name: FAILURE_INTERVAL_MINUTES, value: "10" }
             - { name: FAILURE_DURATION_SECONDS, value: "120" }
+            # Resource attributes land on every span this pod sends.
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "k8s.pod.name=$(POD_NAME),k8s.node.name=$(NODE_NAME),k8s.namespace.name=ijzerhaven,k8s.deployment.name=payments-api,k8s.manifest.url=https://github.com/ophelan1/raw-materials-demo/blob/$(APP_REVISION)/k8s/app.yaml#L112"
           volumeMounts:
             - { name: acquirer-mtls, mountPath: /etc/payments/tls, readOnly: true }
           readinessProbe:
@@ -164,7 +170,7 @@ spec:
             periodSeconds: 5
           resources:
             requests: { cpu: 100m, memory: 192Mi }
-            limits: { memory: 512Mi }
+            limits: { cpu: 500m, memory: 512Mi }
 ---
 apiVersion: v1
 kind: Service
@@ -198,3 +204,59 @@ spec:
             - { name: REQUESTS_PER_SECOND, value: "0.1" }
           resources:
             requests: { cpu: 20m, memory: 64Mi }
+---
+# ---------------------------------------------------------------- capacity-metrics
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capacity-metrics
+  namespace: ijzerhaven
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capacity-metrics
+rules:
+  - apiGroups: [""]
+    resources: [nodes, pods, nodes/proxy, nodes/stats, nodes/metrics]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capacity-metrics
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: capacity-metrics }
+subjects:
+  - { kind: ServiceAccount, name: capacity-metrics, namespace: ijzerhaven }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capacity-metrics
+  namespace: ijzerhaven
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: capacity-metrics }
+  template:
+    metadata:
+      labels: { app: capacity-metrics }
+    spec:
+      serviceAccountName: capacity-metrics
+      containers:
+        - name: capacity-metrics
+          image: ijzerhaven/capacity-metrics:1
+          imagePullPolicy: Never
+          env:
+            - { name: APPSIGNAL_ACTIVE, value: "true" }
+            - { name: APPSIGNAL_APP_ENV, value: production }
+            - { name: APPSIGNAL_ENABLE_HOST_METRICS, value: "false" }
+            - name: APPSIGNAL_APP_NAME
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: app-name } }
+            - name: APPSIGNAL_PUSH_API_KEY
+              valueFrom: { secretKeyRef: { name: appsignal-app, key: push-api-key } }
+            - name: APPSIGNAL_HOSTNAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
